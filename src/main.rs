@@ -3,18 +3,15 @@ extern crate sdl3;
 mod font;
 
 use core::panic;
-use sdl3::audio::{self, AudioCallback, AudioFormat, AudioSpec, AudioStream};
+use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::keyboard::{Keycode, Scancode};
 use sdl3::pixels::Color;
-use sdl3::rect::{Point, Rect};
-use sdl3::render::FRect;
-use sdl3::{event::Event, render::WindowCanvas};
-use std::ops::Div;
+use sdl3::rect::Point;
+use sdl3::render::{FRect, WindowCanvas};
 use std::time::{Duration, Instant};
-use std::usize;
 
 /// Display scale factor.
-const SCALE_FACTOR: usize = 16;
+const SCALE_FACTOR: usize = 12;
 
 /// Display scale factor.
 const DISPLAY_WIDTH: usize = 64;
@@ -67,17 +64,22 @@ struct Chip8Display {
     pixels: [bool; DISPLAY_WIDTH * DISPLAY_HEIGHT],
 }
 
+impl Chip8Display {
+    fn clear(&mut self) -> () {
+        self.pixels.fill(false);
+    }
+
+    fn get_mut(&mut self, x: u8, y: u8) -> &mut bool {
+        return self
+            .pixels
+            .get_mut(x as usize + (y as usize) * DISPLAY_WIDTH)
+            .unwrap();
+    }
+}
+
 #[derive(Debug)]
 struct Chip8Keypad {
     pressed: [bool; 16],
-}
-
-impl Chip8Keypad {
-    fn new() -> Self {
-        Chip8Keypad {
-            pressed: [false; 16],
-        }
-    }
 }
 
 #[allow(unused)]
@@ -89,68 +91,38 @@ struct Chip8State {
     /// Index register.
     i: u16,
     /// General purpose registers.
-    v0: u8,
-    v1: u8,
-    v2: u8,
-    v3: u8,
-    v4: u8,
-    v5: u8,
-    v6: u8,
-    v7: u8,
-    v8: u8,
-    v9: u8,
-    va: u8,
-    vb: u8,
-    vc: u8,
-    vd: u8,
-    ve: u8,
-    vf: u8,
+    v: [u8; 16],
     delay_timer: u8,
     sound_timer: u8,
     stack: Chip8Stack,
     display: Chip8Display,
-    keypad: Chip8Keypad,
 
     //
     elapsed_us: u128,
 }
 
 impl Chip8State {
-    fn new() -> Self {
+    fn new(rom: &[u8]) -> Self {
         let mut ram: [u8; _] = [0; 4096];
 
         // Copy font into ram
         ram[0x50..=0x9F].copy_from_slice(&font::FONT);
+        ram[0x200..0x200 + rom.len()].copy_from_slice(rom);
 
         Chip8State {
             ram: ram,
-            pc: 0,
+            pc: 0x200,
             i: 0,
-            v0: 0,
-            v1: 0,
-            v2: 0,
-            v3: 0,
-            v4: 0,
-            v5: 0,
-            v6: 0,
-            v7: 0,
-            v8: 0,
-            v9: 0,
-            va: 0,
-            vb: 0,
-            vc: 0,
-            vd: 0,
-            ve: 0,
-            vf: 0,
+            v: [0; 16],
             delay_timer: 0,
             sound_timer: 0,
             stack: Chip8Stack::new(),
             display: Chip8Display { pixels: [false; _] },
-            keypad: Chip8Keypad::new(),
             elapsed_us: 0,
         }
     }
-    fn update(&mut self, delta: Duration) {
+
+    fn update(&mut self, delta: Duration, keypad: &Chip8Keypad) {
         // Update timers
         self.elapsed_us += delta.as_micros();
         while self.elapsed_us >= TIMER_DECREMENT_INTERVAL_US {
@@ -166,9 +138,93 @@ impl Chip8State {
 
         // Fetch
         // let instr = &self.ram[(self.pc as usize)..=(self.pc  as usize+ 1)];
-        let i = self.pc as usize;
-        let j = (self.pc + 1) as usize;
-        let instr = &self.ram[i..=j];
+
+        let instr_bytes: [u8; 2] = self.ram[self.pc as usize..]
+            .chunks(2)
+            .next()
+            .expect("Tried to fetch beyond end of ram")
+            .try_into()
+            .unwrap();
+
+        // dbg!(instr_bytes);
+
+        // Big endian
+        let instr = u16::from_be_bytes(instr_bytes);
+
+        // println!("0x{:04x}", instr);
+
+        self.pc += 2;
+
+        // Decode + execute
+
+        let x = ((instr & 0x0f00) >> 8) as usize;
+        let y = ((instr & 0x00f0) >> 4) as usize;
+        let n = instr & 0x000f;
+        let nn = (instr & 0x00ff) as u8;
+        let nnn = instr & 0x0fff;
+
+        match (instr & 0xf000) >> 12 {
+            0x0 => {
+                if instr == 0x00e0 {
+                    // 0x00e0: clear display
+                    self.display.clear();
+                }
+            }
+            0x1 => {
+                // 0x1nnn: jump
+                self.pc = nnn;
+            }
+            0x3 => {
+                // 0x3xnn: conditional skip
+            }
+            0x6 => {
+                // 0x6xnn: load $X register with immediate value
+                self.v[x] = nn;
+            }
+            0x7 => {
+                // 0x7xnn: add value to register $X
+                self.v[x] = self.v[x].wrapping_add(nn);
+            }
+            0xa => {
+                // 0xAnnn: load index register with immediate value
+                self.i = nnn;
+            }
+            0xd => {
+                // dxyn: draw sprite at index register on
+
+                self.v[0xf] = 0;
+
+                let sprite_addr = self.i;
+                let mut posy = self.v[y] % (DISPLAY_HEIGHT as u8);
+
+                'yloop: for row in 0..n {
+                    let mut posx = self.v[x] % (DISPLAY_WIDTH as u8);
+                    let data = self.ram[(sprite_addr + row) as usize];
+
+                    'xloop: for bit_idx in (0..8).rev() {
+                        let value = (data >> bit_idx) & 0b1;
+                        let pixel = self.display.get_mut(posx, posy);
+
+                        if value == 0b1 {
+                            if *pixel {
+                                self.v[0xf] = 1;
+                            }
+                            *pixel = !*pixel;
+                        }
+                        posx += 1;
+                        if posx as usize >= DISPLAY_WIDTH {
+                            break 'xloop;
+                        }
+                    }
+
+                    posy += 1;
+                    if posy as usize >= DISPLAY_HEIGHT {
+                        break 'yloop;
+                    }
+                }
+            }
+            _ => {} //panic!("Invalid instruction 0x{:02x}", instr),
+        }
     }
 }
 
@@ -251,30 +307,38 @@ pub fn main() {
     let mut lag_us = 0;
     let mut prev_render = Instant::now();
 
-    let mut chip8_state = Chip8State::new();
+    // Load rom into ram
+    let mut args = std::env::args();
+    args.next();
 
-    // chip8_state.display.pixels[4] = true;
-    let mut i = 0;
+    let rom_path: String = match args.next() {
+        Some(path) => path,
+        None => panic!("No rom path provided"),
+    };
+    let rom_data = std::fs::read(rom_path).unwrap();
+
+    let num_cycles: usize = match args.next() {
+        Some(cycles) => cycles.parse().unwrap(),
+        None => 0,
+    };
+
+    let mut chip8_state = Chip8State::new(&rom_data);
+
+    let mut cycle_idx = 0;
 
     'running: loop {
         // Handle events
         for event in event_pump.poll_iter() {
+            use sdl3::event::Event;
             match event {
                 Event::Quit { .. }
                 | Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
-                Event::KeyDown {
-                    scancode: Some(Scancode::_1),
-                    ..
-                } => {}
                 _ => {}
             }
         }
-
-        // TODO how to update chip8 keypad given events ?
-        // TODO implement instructions !
 
         // Update in as many fixed steps
         lag_us += prev_update.elapsed().as_micros();
@@ -284,8 +348,36 @@ pub fn main() {
             let delta = prev_update.elapsed();
             prev_update = Instant::now();
 
+            let kb = event_pump.keyboard_state();
+
             // let update_start = Instant::now();
-            chip8_state.update(delta);
+            let keypad = Chip8Keypad {
+                pressed: [
+                    kb.is_scancode_pressed(Scancode::X),
+                    kb.is_scancode_pressed(Scancode::_1),
+                    kb.is_scancode_pressed(Scancode::_2),
+                    kb.is_scancode_pressed(Scancode::_3),
+                    kb.is_scancode_pressed(Scancode::Q),
+                    kb.is_scancode_pressed(Scancode::W),
+                    kb.is_scancode_pressed(Scancode::E),
+                    kb.is_scancode_pressed(Scancode::A),
+                    kb.is_scancode_pressed(Scancode::S),
+                    kb.is_scancode_pressed(Scancode::D),
+                    kb.is_scancode_pressed(Scancode::Z),
+                    kb.is_scancode_pressed(Scancode::C),
+                    kb.is_scancode_pressed(Scancode::_4),
+                    kb.is_scancode_pressed(Scancode::R),
+                    kb.is_scancode_pressed(Scancode::F),
+                    kb.is_scancode_pressed(Scancode::V),
+                ],
+            };
+            if cycle_idx < num_cycles || num_cycles == 0 {
+                chip8_state.update(delta, &keypad);
+                cycle_idx += 1;
+                if cycle_idx == num_cycles {
+                    println!("Stopping interpreter after {} cycles", num_cycles);
+                }
+            }
 
             // println!("update time: {} us", update_start.elapsed().as_micros());
             lag_us -= CHIP8_UPDATE_TIME_US;
@@ -295,10 +387,6 @@ pub fn main() {
             let framerate = 1.0 / prev_render.elapsed().as_secs_f64();
             prev_render = Instant::now();
             render(&mut canvas, &chip8_state.display, framerate, grid);
-            chip8_state.display.pixels[i] = !chip8_state.display.pixels[i];
-            i = (i + 1) % (DISPLAY_WIDTH * DISPLAY_HEIGHT);
-            // let render_time = prev_render.elapsed();
-            // println!("render time: {} us", render_time.as_micros());
         }
     }
 }
@@ -320,7 +408,6 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
                 SCALE_FACTOR as f32,
                 SCALE_FACTOR as f32,
             ));
-            // canvas.fill_rect(Rect::new(x as i32, y as i32, SCALE_FACTOR as u32, SCALE_FACTOR as u32)).expect("q?");
         }
     }
     canvas.fill_rects(&rects).expect("?");
