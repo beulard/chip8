@@ -3,15 +3,15 @@ extern crate sdl3;
 mod font;
 
 use core::panic;
-use std::ops::Div;
-use std::usize;
 use sdl3::audio::{self, AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::keyboard::{Keycode, Scancode};
 use sdl3::pixels::Color;
 use sdl3::rect::{Point, Rect};
 use sdl3::render::FRect;
 use sdl3::{event::Event, render::WindowCanvas};
+use std::ops::Div;
 use std::time::{Duration, Instant};
+use std::usize;
 
 /// Display scale factor.
 const SCALE_FACTOR: usize = 16;
@@ -64,20 +64,21 @@ impl Chip8Stack {
 
 #[derive(Debug)]
 struct Chip8Display {
-    pixels: [bool; DISPLAY_WIDTH * DISPLAY_HEIGHT]
+    pixels: [bool; DISPLAY_WIDTH * DISPLAY_HEIGHT],
 }
 
 #[derive(Debug)]
 struct Chip8Keypad {
-    pressed: [bool; 16]
+    pressed: [bool; 16],
 }
 
 impl Chip8Keypad {
     fn new() -> Self {
-         Chip8Keypad { pressed: [false; 16]}
+        Chip8Keypad {
+            pressed: [false; 16],
+        }
     }
 }
-
 
 #[allow(unused)]
 #[derive(Debug)]
@@ -114,7 +115,6 @@ struct Chip8State {
     elapsed_us: u128,
 }
 
-
 impl Chip8State {
     fn new() -> Self {
         let mut ram: [u8; _] = [0; 4096];
@@ -145,7 +145,7 @@ impl Chip8State {
             delay_timer: 0,
             sound_timer: 0,
             stack: Chip8Stack::new(),
-            display: Chip8Display { pixels: [false; _]},
+            display: Chip8Display { pixels: [false; _] },
             keypad: Chip8Keypad::new(),
             elapsed_us: 0,
         }
@@ -167,16 +167,15 @@ impl Chip8State {
         // Fetch
         // let instr = &self.ram[(self.pc as usize)..=(self.pc  as usize+ 1)];
         let i = self.pc as usize;
-        let j = (self.pc+1) as usize;
+        let j = (self.pc + 1) as usize;
         let instr = &self.ram[i..=j];
     }
 }
 
-
 struct SquareWave {
     phase_inc: f32,
     phase: f32,
-    volume: f32
+    volume: f32,
 }
 
 impl AudioCallback<f32> for SquareWave {
@@ -204,7 +203,6 @@ pub fn main() {
         Err(_) => false,
     };
 
-
     let sdl_context = sdl3::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
     let audio_subsystem = sdl_context.audio().unwrap();
@@ -216,19 +214,26 @@ pub fn main() {
         format: Some(AudioFormat::f32_sys()),
     };
 
-    let dev = audio_subsystem.open_playback_stream(&source_spec, SquareWave {
-        phase_inc: 440.0 / source_freq as f32,
-        phase: 0.0,
-        volume: 0.15
-    }).unwrap();
+    let dev = audio_subsystem
+        .open_playback_stream(
+            &source_spec,
+            SquareWave {
+                phase_inc: 440.0 / source_freq as f32,
+                phase: 0.0,
+                volume: 0.15,
+            },
+        )
+        .unwrap();
 
     dev.resume().unwrap();
     dev.pause().unwrap();
 
-
-
     let window = video_subsystem
-        .window("chip8 interpreter", (DISPLAY_WIDTH  * SCALE_FACTOR) as u32, (DISPLAY_HEIGHT * SCALE_FACTOR) as u32)
+        .window(
+            "chip8 interpreter",
+            (DISPLAY_WIDTH * SCALE_FACTOR) as u32,
+            (DISPLAY_HEIGHT * SCALE_FACTOR) as u32,
+        )
         .position_centered()
         .borderless()
         .build()
@@ -249,7 +254,7 @@ pub fn main() {
     let mut chip8_state = Chip8State::new();
 
     // chip8_state.display.pixels[4] = true;
-    let mut i =0;
+    let mut i = 0;
 
     'running: loop {
         // Handle events
@@ -260,7 +265,10 @@ pub fn main() {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
-                Event::KeyDown {scancode: Some(Scancode::_1), ..} => {},
+                Event::KeyDown {
+                    scancode: Some(Scancode::_1),
+                    ..
+                } => {}
                 _ => {}
             }
         }
@@ -299,7 +307,6 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
     canvas.set_draw_color(Color::RGB(10, 10, 10));
     canvas.clear();
 
-
     // Draw each pixel as a separate square of SCALE_FACTOR x SCALE_FACTOR
     let mut rects = vec![];
     canvas.set_draw_color(Color::RGB(255, 255, 190));
@@ -307,7 +314,12 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
         if *pixel {
             let x = i % DISPLAY_WIDTH * SCALE_FACTOR;
             let y = i / DISPLAY_WIDTH * SCALE_FACTOR;
-            rects.push(FRect::new(x as f32, y as f32, SCALE_FACTOR as f32, SCALE_FACTOR as f32));
+            rects.push(FRect::new(
+                x as f32,
+                y as f32,
+                SCALE_FACTOR as f32,
+                SCALE_FACTOR as f32,
+            ));
             // canvas.fill_rect(Rect::new(x as i32, y as i32, SCALE_FACTOR as u32, SCALE_FACTOR as u32)).expect("q?");
         }
     }
@@ -316,13 +328,28 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
     if grid {
         canvas.set_draw_color(Color::RGB(50, 50, 50));
         for i in 0..DISPLAY_WIDTH {
-            canvas.draw_line(((i * SCALE_FACTOR) as f32 - 1.0, 0.0), ((i * SCALE_FACTOR) as f32 - 1.0, (DISPLAY_HEIGHT * SCALE_FACTOR) as f32)).unwrap();
+            canvas
+                .draw_line(
+                    ((i * SCALE_FACTOR) as f32 - 1.0, 0.0),
+                    (
+                        (i * SCALE_FACTOR) as f32 - 1.0,
+                        (DISPLAY_HEIGHT * SCALE_FACTOR) as f32,
+                    ),
+                )
+                .unwrap();
         }
 
         for i in 0..DISPLAY_HEIGHT {
-            canvas.draw_line((0.0, (i * SCALE_FACTOR) as f32 - 1.0), ((DISPLAY_WIDTH * SCALE_FACTOR) as f32, (i * SCALE_FACTOR) as f32 - 1.0)).unwrap();
+            canvas
+                .draw_line(
+                    (0.0, (i * SCALE_FACTOR) as f32 - 1.0),
+                    (
+                        (DISPLAY_WIDTH * SCALE_FACTOR) as f32,
+                        (i * SCALE_FACTOR) as f32 - 1.0,
+                    ),
+                )
+                .unwrap();
         }
-
     }
 
     canvas.set_draw_color(Color::RGB(165, 165, 165));
