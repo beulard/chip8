@@ -82,6 +82,7 @@ impl Chip8Display {
 #[derive(Debug)]
 struct Chip8Keypad {
     pressed: [bool; 16],
+    pressed_last: [bool; 16],
 }
 
 #[allow(unused)]
@@ -371,7 +372,7 @@ impl Chip8State {
                     // 0xfx0a: get key
                     let mut k: u8 = 16;
                     for i in 0..16 {
-                        if keypad.pressed[i as usize] {
+                        if keypad.pressed_last[i as usize] && !keypad.pressed[i as usize] {
                             k = i;
                             break;
                         }
@@ -547,6 +548,11 @@ pub fn main() {
 
     let mut cycle_idx = 0;
 
+    let mut keypad = Chip8Keypad {
+        pressed: [false; 16],
+        pressed_last: [false; 16],
+    };
+
     'running: loop {
         // Handle events
         for event in event_pump.poll_iter() {
@@ -572,26 +578,26 @@ pub fn main() {
             let kb = event_pump.keyboard_state();
 
             // let update_start = Instant::now();
-            let keypad = Chip8Keypad {
-                pressed: [
-                    kb.is_scancode_pressed(Scancode::X),
-                    kb.is_scancode_pressed(Scancode::_1),
-                    kb.is_scancode_pressed(Scancode::_2),
-                    kb.is_scancode_pressed(Scancode::_3),
-                    kb.is_scancode_pressed(Scancode::Q),
-                    kb.is_scancode_pressed(Scancode::W),
-                    kb.is_scancode_pressed(Scancode::E),
-                    kb.is_scancode_pressed(Scancode::A),
-                    kb.is_scancode_pressed(Scancode::S),
-                    kb.is_scancode_pressed(Scancode::D),
-                    kb.is_scancode_pressed(Scancode::Z),
-                    kb.is_scancode_pressed(Scancode::C),
-                    kb.is_scancode_pressed(Scancode::_4),
-                    kb.is_scancode_pressed(Scancode::R),
-                    kb.is_scancode_pressed(Scancode::F),
-                    kb.is_scancode_pressed(Scancode::V),
-                ],
-            };
+            keypad.pressed_last = keypad.pressed;
+            keypad.pressed = [
+                kb.is_scancode_pressed(Scancode::X),
+                kb.is_scancode_pressed(Scancode::_1),
+                kb.is_scancode_pressed(Scancode::_2),
+                kb.is_scancode_pressed(Scancode::_3),
+                kb.is_scancode_pressed(Scancode::Q),
+                kb.is_scancode_pressed(Scancode::W),
+                kb.is_scancode_pressed(Scancode::E),
+                kb.is_scancode_pressed(Scancode::A),
+                kb.is_scancode_pressed(Scancode::S),
+                kb.is_scancode_pressed(Scancode::D),
+                kb.is_scancode_pressed(Scancode::Z),
+                kb.is_scancode_pressed(Scancode::C),
+                kb.is_scancode_pressed(Scancode::_4),
+                kb.is_scancode_pressed(Scancode::R),
+                kb.is_scancode_pressed(Scancode::F),
+                kb.is_scancode_pressed(Scancode::V),
+            ];
+
             if cycle_idx < num_cycles || num_cycles == 0 {
                 chip8_state.update(delta, &keypad);
                 cycle_idx += 1;
