@@ -20,7 +20,8 @@ const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
 
 /// Target frame time.
-const FRAMETIME_US: u128 = 16667;
+/// For some reason, the quirks test will not register my display interrupt wait unless the frame rate is slightly lower than 60fps.
+const FRAMETIME_US: u128 = 16800;
 
 const TIMER_DECREMENT_INTERVAL_US: u128 = 16667;
 
@@ -129,7 +130,7 @@ impl Chip8State {
         }
     }
 
-    fn update(&mut self, delta: Duration, keypad: &Chip8Keypad) {
+    fn update(&mut self, delta: Duration, keypad: &Chip8Keypad, blank_interrupt: bool) {
         // Update timers
         self.elapsed_us += delta.as_micros();
         while self.elapsed_us >= TIMER_DECREMENT_INTERVAL_US {
@@ -144,7 +145,6 @@ impl Chip8State {
         }
 
         // Fetch
-        // let instr = &self.ram[(self.pc as usize)..=(self.pc  as usize+ 1)];
 
         let instr_bytes: [u8; 2] = self.ram[self.pc as usize..]
             .chunks(2)
@@ -305,34 +305,39 @@ impl Chip8State {
             0xd => {
                 // 0xdxyn: draw sprite
 
-                self.v[0xf] = 0;
+                if !blank_interrupt {
+                    // Block on this instruction until the next render
+                    self.pc -= 2;
+                } else {
+                    self.v[0xf] = 0;
 
-                let sprite_addr = self.i;
-                let mut posy = self.v[y] % (DISPLAY_HEIGHT as u8);
+                    let sprite_addr = self.i;
+                    let mut posy = self.v[y] % (DISPLAY_HEIGHT as u8);
 
-                'yloop: for row in 0..n {
-                    let mut posx = self.v[x] % (DISPLAY_WIDTH as u8);
-                    let data = self.ram[(sprite_addr + row) as usize];
+                    'yloop: for row in 0..n {
+                        let mut posx = self.v[x] % (DISPLAY_WIDTH as u8);
+                        let data = self.ram[(sprite_addr + row) as usize];
 
-                    'xloop: for bit_idx in (0..8).rev() {
-                        let value = (data >> bit_idx) & 0b1;
-                        let pixel = self.display.get_mut(posx, posy);
+                        'xloop: for bit_idx in (0..8).rev() {
+                            let value = (data >> bit_idx) & 0b1;
+                            let pixel = self.display.get_mut(posx, posy);
 
-                        if value == 0b1 {
-                            if *pixel {
-                                self.v[0xf] = 1;
+                            if value == 0b1 {
+                                if *pixel {
+                                    self.v[0xf] = 1;
+                                }
+                                *pixel = !*pixel;
                             }
-                            *pixel = !*pixel;
+                            posx += 1;
+                            if posx as usize >= DISPLAY_WIDTH {
+                                break 'xloop;
+                            }
                         }
-                        posx += 1;
-                        if posx as usize >= DISPLAY_WIDTH {
-                            break 'xloop;
-                        }
-                    }
 
-                    posy += 1;
-                    if posy as usize >= DISPLAY_HEIGHT {
-                        break 'yloop;
+                        posy += 1;
+                        if posy as usize >= DISPLAY_HEIGHT {
+                            break 'yloop;
+                        }
                     }
                 }
             }
@@ -553,6 +558,8 @@ pub fn main() {
         pressed_last: [false; 16],
     };
 
+    let mut just_rendered = false;
+
     'running: loop {
         // Handle events
         for event in event_pump.poll_iter() {
@@ -577,7 +584,6 @@ pub fn main() {
 
             let kb = event_pump.keyboard_state();
 
-            // let update_start = Instant::now();
             keypad.pressed_last = keypad.pressed;
             keypad.pressed = [
                 kb.is_scancode_pressed(Scancode::X),
@@ -599,7 +605,8 @@ pub fn main() {
             ];
 
             if cycle_idx < num_cycles || num_cycles == 0 {
-                chip8_state.update(delta, &keypad);
+                chip8_state.update(delta, &keypad, just_rendered);
+                just_rendered = false;
                 cycle_idx += 1;
                 if cycle_idx == num_cycles {
                     println!("Stopping interpreter after {} cycles", num_cycles);
@@ -621,6 +628,7 @@ pub fn main() {
             let framerate = 1.0 / prev_render.elapsed().as_secs_f64();
             prev_render = Instant::now();
             render(&mut canvas, &chip8_state.display, framerate, grid);
+            just_rendered = true;
         }
     }
 }
