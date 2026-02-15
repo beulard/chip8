@@ -3,6 +3,8 @@ extern crate sdl3;
 mod font;
 
 use core::panic;
+use rand::RngExt;
+use rand::rngs::ThreadRng;
 use sdl3::audio::{AudioCallback, AudioFormat, AudioSpec, AudioStream};
 use sdl3::keyboard::{Keycode, Scancode};
 use sdl3::pixels::Color;
@@ -96,13 +98,15 @@ struct Chip8State {
     sound_timer: u8,
     stack: Chip8Stack,
     display: Chip8Display,
-
-    //
+    rng: ThreadRng,
+    /// If true, stick to the cosmac quirks
+    cosmac_quirks: bool,
+    /// Used to update timers
     elapsed_us: u128,
 }
 
 impl Chip8State {
-    fn new(rom: &[u8]) -> Self {
+    fn new(rom: &[u8], cosmac: bool) -> Self {
         let mut ram: [u8; _] = [0; 4096];
 
         // Copy font into ram
@@ -118,6 +122,8 @@ impl Chip8State {
             sound_timer: 0,
             stack: Chip8Stack::new(),
             display: Chip8Display { pixels: [false; _] },
+            rng: rand::rng(),
+            cosmac_quirks: cosmac,
             elapsed_us: 0,
         }
     }
@@ -168,29 +174,135 @@ impl Chip8State {
                 if instr == 0x00e0 {
                     // 0x00e0: clear display
                     self.display.clear();
+                } else if instr == 0x00ee {
+                    // 0x00ee: return from subroutine
+                    self.pc = self.stack.pop();
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
                 }
             }
             0x1 => {
                 // 0x1nnn: jump
                 self.pc = nnn;
             }
+            0x2 => {
+                // 0x2nnn: call subroutine
+                self.stack.push(self.pc);
+                self.pc = nnn;
+            }
             0x3 => {
-                // 0x3xnn: conditional skip
+                // 0x3xnn: skip if vx == nn
+                if self.v[x] == nn {
+                    self.pc += 2;
+                }
+            }
+            0x4 => {
+                // 0x4xnn: skip if vx != nn
+                if self.v[x] != nn {
+                    self.pc += 2;
+                }
+            }
+            0x5 => {
+                // 0x5xy0: skip if vx == vy
+                if n == 0x0 {
+                    if self.v[x] == self.v[y] {
+                        self.pc += 2;
+                    }
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
+                }
             }
             0x6 => {
-                // 0x6xnn: load $X register with immediate value
+                // 0x6xnn: load vx with immediate value
                 self.v[x] = nn;
             }
             0x7 => {
-                // 0x7xnn: add value to register $X
+                // 0x7xnn: add value to register vx
                 self.v[x] = self.v[x].wrapping_add(nn);
             }
+            0x8 => {
+                // arithmetic
+                if n == 0x0 {
+                    // 0x8xy0: set
+                    self.v[x] = self.v[y];
+                } else if n == 0x1 {
+                    // 0x8xy1: binary or
+                    self.v[x] = self.v[x] | self.v[y];
+                    if self.cosmac_quirks {
+                        self.v[0xf] = 0;
+                    }
+                } else if n == 0x2 {
+                    // 0x8xy2: binary and
+                    self.v[x] = self.v[x] & self.v[y];
+                    if self.cosmac_quirks {
+                        self.v[0xf] = 0;
+                    }
+                } else if n == 0x3 {
+                    // 0x8xy3: binary xor
+                    self.v[x] = self.v[x] ^ self.v[y];
+                    // dbg!(self.cosmac_quirks);
+                    if self.cosmac_quirks {
+                        self.v[0xf] = 0;
+                    }
+                } else if n == 0x4 {
+                    // 0x8xy4: add
+                    let (value, overflow) = self.v[x].overflowing_add(self.v[y]);
+                    self.v[x] = value;
+                    self.v[0xf] = if overflow { 1 } else { 0 };
+                } else if n == 0x5 {
+                    // 0x8xy5: subtract vx - vy
+                    let (value, overflow) = self.v[x].overflowing_sub(self.v[y]);
+                    self.v[x] = value;
+                    self.v[0xf] = if overflow { 0 } else { 1 };
+                } else if n == 0x6 {
+                    // 0x8xy6: shift right
+                    if self.cosmac_quirks {
+                        self.v[x] = self.v[y];
+                    }
+                    let bit = self.v[x] & 0b1;
+                    self.v[x] = self.v[x] >> 1;
+                    self.v[0xf] = bit;
+                } else if n == 0x7 {
+                    // 0x8xy7: subtract vy - vx
+                    let (value, overflow) = self.v[y].overflowing_sub(self.v[x]);
+                    self.v[x] = value;
+                    self.v[0xf] = if overflow { 0 } else { 1 };
+                } else if n == 0xe {
+                    // 0x8xye: shift left
+                    if self.cosmac_quirks {
+                        self.v[x] = self.v[y];
+                    }
+                    let bit = (self.v[x] & 0b10000000) >> 7;
+                    self.v[x] = self.v[x] << 1;
+                    self.v[0xf] = bit;
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
+                }
+            }
+            0x9 => {
+                // 0x9xy0: skip if vx != vy
+                if n == 0x0 {
+                    if self.v[x] != self.v[y] {
+                        self.pc += 2;
+                    }
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
+                }
+            }
             0xa => {
-                // 0xAnnn: load index register with immediate value
+                // 0xannn: load index register with immediate value
                 self.i = nnn;
             }
+            0xb => {
+                // 0xbnnn: jump to v0 + nnn
+                self.pc = nnn + self.v[0x0] as u16;
+            }
+            0xc => {
+                // 0xcxnn: rng
+                self.v[x] = self.rng.random::<u8>() & nn;
+            }
             0xd => {
-                // dxyn: draw sprite at index register on
+                // 0xdxyn: draw sprite
 
                 self.v[0xf] = 0;
 
@@ -223,7 +335,103 @@ impl Chip8State {
                     }
                 }
             }
-            _ => {} //panic!("Invalid instruction 0x{:02x}", instr),
+            0xe => {
+                if nn == 0x9e {
+                    // 0xex9e: skip if key in vx is pressed
+                    if keypad.pressed[self.v[x] as usize] {
+                        self.pc += 2;
+                    }
+                } else if nn == 0xa1 {
+                    // 0xexa1: skip if key in vx is not pressed
+                    if !keypad.pressed[self.v[x] as usize] {
+                        self.pc += 2;
+                    }
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
+                }
+            }
+            0xf => {
+                if nn == 0x07 {
+                    // 0xfx15: get delay timer
+                    self.v[x] = self.delay_timer;
+                } else if nn == 0x15 {
+                    // 0xfx15: set delay timer
+                    self.delay_timer = self.v[x];
+                } else if nn == 0x18 {
+                    // 0xfx18: set sound timer
+                    self.sound_timer = self.v[x];
+                } else if nn == 0x1e {
+                    // 0xfx15: add to index
+                    self.i += self.v[x] as u16;
+                    if self.i >= 0x1000 {
+                        self.v[0xf] = 1;
+                        self.i = self.i % 0x1000;
+                    }
+                } else if nn == 0x0a {
+                    // 0xfx0a: get key
+                    let mut k: u8 = 16;
+                    for i in 0..16 {
+                        if keypad.pressed[i as usize] {
+                            k = i;
+                            break;
+                        }
+                    }
+                    if k > 15 {
+                        // Keep executing this instruction until some key is pressed
+                        self.pc -= 2;
+                    } else {
+                        self.v[x] = k;
+                    }
+                } else if nn == 0x29 {
+                    // 0xfx29: set index to a font sprite
+                    self.i = 0x50 + self.v[x] as u16 * 5;
+                } else if nn == 0x33 {
+                    // 0xfx33: vx to decimal
+                    let mut vx = self.v[x];
+                    self.ram[self.i as usize] = vx / 100;
+                    vx = vx % 100;
+                    self.ram[(self.i + 1) as usize] = vx / 10;
+                    vx = vx % 10;
+                    self.ram[(self.i + 2) as usize] = vx;
+                    // println!(
+                    //     "{} -> {} {} {}",
+                    //     self.v[x],
+                    //     self.ram[(self.i + 0) as usize],
+                    //     self.ram[(self.i + 1) as usize],
+                    //     self.ram[(self.i + 2) as usize]
+                    // );
+                } else if nn == 0x55 {
+                    // 0xfx55: store to ram
+                    // dbg!(self.i, self.v[x], self.ram[self.i as usize]);
+                    if self.cosmac_quirks {
+                        for i in 0..=x {
+                            self.ram[self.i as usize] = self.v[i];
+                            self.i += 1;
+                        }
+                    } else {
+                        for i in 0..=x {
+                            self.ram[self.i as usize + i] = self.v[i];
+                        }
+                    }
+                } else if nn == 0x65 {
+                    // 0xfx65: load from ram
+                    if self.cosmac_quirks {
+                        for i in 0..=x {
+                            self.v[i] = self.ram[self.i as usize];
+                            self.i += 1;
+                        }
+                    } else {
+                        for i in 0..=x {
+                            self.v[i] = self.ram[self.i as usize + i];
+                        }
+                    }
+                } else {
+                    panic!("Unknown instruction 0x{:02x}", instr);
+                }
+            }
+            _ => {
+                println!("Unknown instruction 0x{:02x}", instr);
+            } //panic!("Invalid instruction 0x{:02x}", instr),
         }
     }
 }
@@ -252,12 +460,27 @@ impl AudioCallback<f32> for SquareWave {
 
 pub fn main() {
     let grid = match std::env::var("CHIP8_GRID") {
-        Ok(value) => match value.as_str() {
-            "OFF" | "" => false,
-            _ => true,
-        },
+        Ok(value) => {
+            if value == "" {
+                false
+            } else {
+                true
+            }
+        }
         Err(_) => false,
     };
+    dbg!(grid);
+    let cosmac_quirks = match std::env::var("CHIP8_COSMAC_QUIRKS") {
+        Ok(value) => {
+            if value == "" {
+                false
+            } else {
+                true
+            }
+        }
+        Err(_) => false,
+    };
+    dbg!(cosmac_quirks);
 
     let sdl_context = sdl3::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
@@ -276,13 +499,11 @@ pub fn main() {
             SquareWave {
                 phase_inc: 440.0 / source_freq as f32,
                 phase: 0.0,
-                volume: 0.15,
+                volume: 0.05,
             },
         )
         .unwrap();
-
-    dev.resume().unwrap();
-    dev.pause().unwrap();
+    let mut beeping = false;
 
     let window = video_subsystem
         .window(
@@ -322,7 +543,7 @@ pub fn main() {
         None => 0,
     };
 
-    let mut chip8_state = Chip8State::new(&rom_data);
+    let mut chip8_state = Chip8State::new(&rom_data, cosmac_quirks);
 
     let mut cycle_idx = 0;
 
@@ -376,6 +597,13 @@ pub fn main() {
                 cycle_idx += 1;
                 if cycle_idx == num_cycles {
                     println!("Stopping interpreter after {} cycles", num_cycles);
+                }
+                if chip8_state.sound_timer > 0 && !beeping {
+                    beeping = true;
+                    dev.resume().unwrap();
+                } else if beeping && chip8_state.sound_timer == 0 {
+                    beeping = false;
+                    dev.pause().unwrap();
                 }
             }
 
@@ -444,4 +672,23 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
         .draw_debug_text(&format!("{:.1}", framerate), Point::new(5, 5))
         .unwrap();
     canvas.present();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_0() {
+        // let input = 254;
+        // let input = 33;
+        let input = 9;
+
+        let mut vx = input;
+
+        let d0 = vx / 100;
+        vx = vx % 100;
+        let d1 = vx / 10;
+        vx = vx % 10;
+        let d2 = vx;
+        println!("{} -> {} {} {}", input, d0, d1, d2,);
+    }
 }
