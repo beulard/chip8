@@ -465,6 +465,17 @@ impl AudioCallback<f32> for SquareWave {
 }
 
 pub fn main() {
+    let fps = match std::env::var("CHIP8_FPS") {
+        Ok(value) => {
+            if value == "" {
+                false
+            } else {
+                true
+            }
+        }
+        Err(_) => false,
+    };
+    println!("CHIP8_FPS={}", fps);
     let grid = match std::env::var("CHIP8_GRID") {
         Ok(value) => {
             if value == "" {
@@ -475,7 +486,7 @@ pub fn main() {
         }
         Err(_) => false,
     };
-    dbg!(grid);
+    println!("CHIP8_GRID={}", grid);
     let cosmac_quirks = match std::env::var("CHIP8_COSMAC_QUIRKS") {
         Ok(value) => {
             if value == "" {
@@ -486,7 +497,7 @@ pub fn main() {
         }
         Err(_) => false,
     };
-    dbg!(cosmac_quirks);
+    println!("CHIP8_COSMAC_QUIRKS={}", cosmac_quirks);
 
     let sdl_context = sdl3::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
@@ -536,11 +547,15 @@ pub fn main() {
 
     // Load rom into ram
     let mut args = std::env::args();
-    args.next();
+    let cmd = args.next().unwrap();
 
     let rom_path: String = match args.next() {
         Some(path) => path,
-        None => panic!("No rom path provided"),
+        None => {
+            println!("Please provide the path to a chip8 rom.");
+            println!("Usage: {} path/to/rom.ch8", cmd);
+            return;
+        }
     };
     let rom_data = std::fs::read(rom_path).unwrap();
 
@@ -625,7 +640,12 @@ pub fn main() {
         }
 
         if prev_render.elapsed().as_micros() > FRAMETIME_US {
-            let framerate = 1.0 / prev_render.elapsed().as_secs_f64();
+            let framerate = if fps {
+                Some(1.0 / prev_render.elapsed().as_secs_f64())
+            } else {
+                None
+            };
+
             prev_render = Instant::now();
             render(&mut canvas, &chip8_state.display, framerate, grid);
             just_rendered = true;
@@ -633,7 +653,7 @@ pub fn main() {
     }
 }
 
-fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, grid: bool) {
+fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: Option<f64>, grid: bool) {
     canvas.set_draw_color(Color::RGB(10, 10, 10));
     canvas.clear();
 
@@ -681,10 +701,12 @@ fn render(canvas: &mut WindowCanvas, display: &Chip8Display, framerate: f64, gri
         }
     }
 
-    canvas.set_draw_color(Color::RGB(165, 165, 165));
-    canvas
-        .draw_debug_text(&format!("{:.1}", framerate), Point::new(5, 5))
-        .unwrap();
+    if let Some(fps) = framerate {
+        canvas.set_draw_color(Color::RGB(165, 165, 165));
+        canvas
+            .draw_debug_text(&format!("{:.1}", fps), Point::new(5, 5))
+            .unwrap();
+    }
     canvas.present();
 }
 
